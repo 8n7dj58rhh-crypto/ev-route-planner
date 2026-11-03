@@ -206,6 +206,20 @@ details.box[open] summary::after{content:"－"}
 #chart .ele{fill:var(--faint);opacity:.22}
 #chart .rs{stroke:var(--warn);stroke-dasharray:4 3}
 #chart .sp{fill:var(--charger);stroke:var(--panel);stroke-width:1.5}
+.rangebtn{display:flex;align-items:center;gap:5px;border:0;border-radius:10px;padding:7px 10px;background:var(--panel);color:var(--fg);font:600 12px var(--f-body);box-shadow:var(--shadow);cursor:pointer}
+.rangebtn[aria-pressed="true"]{background:var(--accent);color:#fff}
+.rlegend{position:absolute;right:12px;top:60px;z-index:500;background:var(--panel);border-radius:12px;box-shadow:var(--shadow);padding:10px 12px;font-size:12px;display:flex;flex-direction:column;gap:4px;max-width:250px}
+.rlegend .rmode{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin:2px 0}
+.rmode button{border:1px solid var(--line);background:var(--chip);color:var(--fg);border-radius:8px;padding:4px 6px;font:600 11.5px var(--f-body);cursor:pointer}
+.rmode button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
+.rlegend small{color:var(--muted);font-size:11px}
+.range small,#cartable small{color:var(--muted);font-size:10.5px}
+.rlegend div{display:grid;grid-template-columns:14px 1fr auto;gap:6px;align-items:center}
+.rlegend div span{color:var(--muted)}
+.rlegend i{width:14px;height:10px;border-radius:3px;opacity:.75}
+.rlegend i.dash{height:0;border-top:2px solid var(--fg);border-radius:0}
+.rangeimg{image-rendering:auto}
+@media (max-width:880px){.rlegend{top:56px;right:12px;max-width:205px;font-size:11px;padding:8px 10px;gap:2px}.rlegend small{font-size:10px}}
 .busy{position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:600;background:var(--fg);color:var(--panel);border-radius:999px;padding:7px 14px;font-size:12.5px;box-shadow:var(--shadow);display:flex;align-items:center;gap:8px}
 .busy i{width:12px;height:12px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:sp 0.8s linear infinite}
 @keyframes sp{to{transform:rotate(360deg)}}
@@ -245,6 +259,7 @@ details.box[open] summary::after{content:"－"}
       <input type="range" id="soc" min="10" max="100" value="90" aria-label="出発時の残量">
       <div class="range" id="rangev"></div>
     </div>
+    <details class="box"><summary>車種ごとの電費・航続距離を比べる</summary><div class="tblwrap" id="cartable" style="margin-top:8px"></div><p class="note">高速は設定した巡航速度、一般道は信号での加減速を含む平均34km/hの平地で計算。行をタップするとその車種に切り替わります。</p></details>
 
     <div class="opts" id="opts"></div>
     <div id="alert"></div>
@@ -402,21 +417,20 @@ async function valhalla(locs,mode){
   }
   throw new Error('ルートサーバーが混み合っています。少し待ってから再計算してください');
 }
-// 国土地理院の標高タイル（dem_png, z11）から標高を読む
+// 国土地理院の標高タイル（dem_png）から標高を読む。ルートはz11、航続範囲はz8
 const TILES=new Map();
-function demTile(x,y){const k=x+'/'+y;if(TILES.has(k))return TILES.get(k);
-  const p=(async()=>{try{const r=await fetch(`https://cyberjapandata.gsi.go.jp/xyz/dem_png/11/${k}.png`);if(!r.ok)return null;
+function demTile(z,x,y){const k=z+'/'+x+'/'+y;if(TILES.has(k))return TILES.get(k);
+  const p=(async()=>{try{const r=await fetch(`https://cyberjapandata.gsi.go.jp/xyz/dem_png/${k}.png`);if(!r.ok)return null;
     const bmp=await createImageBitmap(await r.blob());const cv=document.createElement('canvas');cv.width=cv.height=256;
     const cx=cv.getContext('2d',{willReadFrequently:true});cx.drawImage(bmp,0,0);return cx.getImageData(0,0,256,256).data;}catch(e){return null;}})();
   TILES.set(k,p);return p;}
-async function elevations(pts){
-  const n=2**11;
-  return Promise.all(pts.map(async([lat,lon])=>{
-    const fx=(lon+180)/360*n,fy=(1-Math.log(Math.tan(lat*D2R)+1/Math.cos(lat*D2R))/Math.PI)/2*n;
-    const tx=Math.floor(fx),ty=Math.floor(fy),d=await demTile(tx,ty);if(!d)return null;
-    const i=(Math.min(255,Math.floor((fy-ty)*256))*256+Math.min(255,Math.floor((fx-tx)*256)))*4,v=d[i]*65536+d[i+1]*256+d[i+2];
-    if(v===8388608)return null;return (v<8388608?v:v-16777216)*0.01;}));
+async function elevAt(lat,lon,z){
+  const n=2**z,fx=(lon+180)/360*n,fy=(1-Math.log(Math.tan(lat*D2R)+1/Math.cos(lat*D2R))/Math.PI)/2*n;
+  const tx=Math.floor(fx),ty=Math.floor(fy),d=await demTile(z,tx,ty);if(!d)return null;
+  const i=(Math.min(255,Math.floor((fy-ty)*256))*256+Math.min(255,Math.floor((fx-tx)*256)))*4,v=d[i]*65536+d[i+1]*256+d[i+2];
+  if(v===8388608)return null;return (v<8388608?v:v-16777216)*0.01;
 }
+const elevations=pts=>Promise.all(pts.map(([la,lo])=>elevAt(la,lo,11)));
 async function weather(samples){
   const d0=new Date(depEpoch());const today=new Date();today.setHours(0,0,0,0);
   const days=(d0-today)/864e5;if(days<-1||days>14)return null;
@@ -502,9 +516,17 @@ function auxKW(T){
   if(T<18)k+=(0.35+(18-T)*0.1)*f;else if(T>24)k+=(0.35+(T-24)*0.1)*f;else k+=0.2*f;
   return Math.min(k,5);
 }
-function physics(){
-  const m=M(),w=st.wheel==='21'?1.1:st.wheel==='20'?1.05:1;
+function physics(m=M()){
+  const w=st.wheel==='21'?1.1:st.wheel==='20'?1.05:1;
   return{mass:m.mass+st.pax*65+st.cargo+(st.roofbox?20:0),cda:m.cda*(st.roofbox?1.2:1)*(w>1?1.02:1),crr:0.0095*w,eta:m.eta,regen:0.7};
+}
+// 車種ごとの平地電費（Wh/km）と航続距離：高速は設定の巡航速度、一般道は平均34km/h・加減速込み
+function carEff(m=M(),T=st.temp){
+  const P=physics(m),rho=1.225*288.15/(273.15+T),cold=1+Math.max(0,10-T)*0.006;
+  const wh=v=>(0.5*rho*P.cda*(v/3.6)**2+P.crr*(st.rain?1.25:1)*P.mass*9.81)/P.eta/3.6e6*1e6*cold;
+  const cap=m.cap*(1-st.degr/100);
+  const hw=wh(st.speed)+auxKW(T)*1000/(st.speed*0.96),gen=wh(48)*1.12+auxKW(T)*1000/34;
+  return{hw,gen,cap,hwKm:cap*0.9/hw*1000,genKm:cap*0.9/gen*1000};
 }
 // 区間ごとの時間(h)と消費(kWh)
 function profile(route,speedOverride){
@@ -662,7 +684,7 @@ async function loadRoutes(){
     busy(null,'天気予報を取得中…');
     await attachWeather(out.hw,out.gen);
     if(my!==seq)return;
-    BASE=out;REF={};recompute(true);
+    BASE=out;REF={};recompute(!rangeOn);
   }catch(e){showErr(e.message||String(e));}
   finally{busy(false);}
 }
@@ -692,6 +714,7 @@ function evaluatePlan(p){
 function recompute(fit){
   save();
   RES={};PLANS.forEach(p=>RES[p.id]=evaluatePlan(p));
+  scheduleRange();
   renderAll(fit);
   scheduleRefine();
 }
@@ -759,8 +782,10 @@ function wxSummary(V){
 function renderTop(){
   const m=M(),cap=capNow();
   $('#socv').textContent=st.soc+'%';const bf=$('#battfill');bf.style.width=st.soc+'%';bf.style.background=socColor(st.soc);
-  const P=physics(),wh=v=>{const rho=1.2,F=0.5*rho*P.cda*(v/3.6)**2+P.crr*P.mass*9.81;return(F*1000/P.eta/3.6e6+auxKW(st.temp)/v)*1000;};
-  $('#rangev').innerHTML=`使える容量 ${cap.toFixed(1)} kWh ・ 高速${st.speed}km/hで約 <b class="num">${Math.round(st.soc/100*cap/wh(st.speed)*1000)} km</b> ・ WLTC ${m.wltc} km`;
+  const ef=carEff();
+  $('#rangev').innerHTML=`使える容量 ${cap.toFixed(1)} kWh ・ WLTC ${m.wltc} km<br>今の残量で：高速${st.speed}km/h <b class="num">${Math.round(st.soc/100*cap/ef.hw*1000)} km</b>（${Math.round(ef.hw)} Wh/km）・一般道 <b class="num">${Math.round(st.soc/100*cap/ef.gen*1000)} km</b>（${Math.round(ef.gen)} Wh/km）`;
+  const tb=$('#cartable');if(tb){const rows=MODELS.map(x=>({x,e:carEff(x)}));
+    tb.innerHTML=`<table class="t"><thead><tr><th>車種（${st.temp}℃・満充電→10%）</th><th>高速${st.speed}</th><th>一般道</th></tr></thead><tbody>${rows.map(({x,e})=>`<tr class="${x.id===st.model?'cur':''}" data-model="${x.id}"><td>${esc(x.name)}</td><td class="num">${Math.round(e.hwKm)} km<br><small>${Math.round(e.hw)} Wh/km</small></td><td class="num">${Math.round(e.genKm)} km<br><small>${Math.round(e.gen)} Wh/km</small></td></tr>`).join('')}</tbody></table>`;}
   $('#speedv').textContent=st.speed+' km/h';$('#tempv').textContent=st.temp+' ℃';$('#reservev').textContent=st.reserve+'%';$('#arrivev').textContent=st.arrive+'%';
   $('#degrv').textContent=st.degr+'%';$('#cargov').textContent=st.cargo+' kg';$('#minchgv').textContent=st.minchg+'%';
 }
@@ -773,14 +798,14 @@ function renderCards(){
   $('#opts').innerHTML=PLANS.map(p=>{const r=RES[p.id];if(!r)return'';
     if(r.fail)return`<button class="opt" data-plan="${p.id}" aria-pressed="${st.plan===p.id}"><span class="lab">${p.label}<span class="pill bad">要充電</span></span><span class="t">--</span><span class="s">出発時${r.need?r.need+'%以上':'到達不可'}</span></button>`;
     const V=r.refined?{...r,...r.refined}:r,x=tot(r),n=V.tl.ev.filter(e=>e.type==='sc').length;
-    return`<button class="opt" data-plan="${p.id}" aria-pressed="${st.plan===p.id}"><span class="lab">${p.label}${r===fast?'<span class="pill">最速</span>':''}${r===cheap?'<span class="pill g">最安</span>':''}</span><span class="t">${r.refined?'':'≈'}${fmtHs(x.t)}</span><span class="s">充電${n}回・到着${Math.round(V.tl.arrSoc)}%</span><span class="s">${yen(x.money)}（充電+高速）</span></button>`;}).join('');
+    return`<button class="opt" data-plan="${p.id}" aria-pressed="${st.plan===p.id}"><span class="lab">${p.label}${r===fast?'<span class="pill">最速</span>':''}${r===cheap?'<span class="pill g">最安</span>':''}</span><span class="t">${r.refined||!r.stops.length?'':'≈'}${fmtHs(x.t)}</span><span class="s">充電${n}回・到着${Math.round(V.tl.arrSoc)}%</span><span class="s">${yen(x.money)}（充電+高速）</span></button>`;}).join('');
 }
 function renderSummary(V){
   const c=clockAt(depEpoch()+V.tl.totalH*3.6e6),d=clockAt(depEpoch());
   const km=V.tl.ev.filter(e=>e.type==='drive').reduce((s,e)=>s+e.km,0),kwh=V.tl.ev.filter(e=>e.type==='drive').reduce((s,e)=>s+e.e,0);
   const asc=V.route.segs.reduce((s,x)=>s+Math.max(0,x.dh),0),top=Math.max(...V.route.segs.map(x=>x.ele||0));
   $('#sum').innerHTML=`<div class="eta num">${c.txt}<small>${c.day?c.day+'日後 ':''}到着</small></div><div class="dur num">${fmtH(V.tl.totalH)}</div>
-   <div class="sub">${d.txt} 出発 ・ ${Math.round(km)} km ・ 到着時の残量 <b class="num" style="color:${socColor(V.tl.arrSoc)}">${Math.round(V.tl.arrSoc)}%</b>${V.ref?' ・ 充電地点経由で再計算済み':' ・ 概算（再計算中）'}</div>`;
+   <div class="sub">${d.txt} 出発 ・ ${Math.round(km)} km ・ 到着時の残量 <b class="num" style="color:${socColor(V.tl.arrSoc)}">${Math.round(V.tl.arrSoc)}%</b>${V.ref?' ・ 充電地点経由で再計算済み':V.stops&&V.stops.length?' ・ 概算（再計算中）':' ・ 充電なしで到着'}</div>`;
   const chH=V.tl.ev.filter(e=>e.type==='sc').reduce((s,e)=>s+e.ch,0),n=V.tl.ev.filter(e=>e.type==='sc').length;
   $('#stats').innerHTML=`<div><b>${kwh.toFixed(1)}<small> kWh</small></b><span>消費電力量</span></div>
    <div><b>${Math.round(kwh*1000/km)}<small> Wh/km</small></b><span>平均電費</span></div>
@@ -930,7 +955,7 @@ const LAYERS={
 (dark?LAYERS['ダーク']:LAYERS['地理院 淡色']).addTo(map);
 L.control.layers(LAYERS,null,{position:'topright'}).addTo(map);
 L.control.scale({imperial:false}).addTo(map);
-const gAll=L.layerGroup().addTo(map),gAlt=L.layerGroup().addTo(map),gRoute=L.layerGroup().addTo(map),gMk=L.layerGroup().addTo(map);
+const gUnder=L.layerGroup().addTo(map),gAll=L.layerGroup().addTo(map),gAlt=L.layerGroup().addTo(map),gRoute=L.layerGroup().addTo(map),gMk=L.layerGroup().addTo(map);
 const renderer=L.canvas({padding:0.3});
 // 全国のスーパーチャージャー
 SC.forEach(c=>{
@@ -947,7 +972,7 @@ map.on('click',async e=>{
   const {lat,lng}=e.latlng;
   const pop=L.popup().setLatLng(e.latlng).setContent(`<div class="pp"><b>この地点</b><small>${lat.toFixed(5)}, ${lng.toFixed(5)}</small><div class="pb"><button data-set="0" data-lat="${lat}" data-lon="${lng}">出発地に</button><button data-set="via" data-lat="${lat}" data-lon="${lng}">経由地に</button><button class="pri" data-set="dest" data-lat="${lat}" data-lon="${lng}">目的地に</button></div></div>`).openOn(map);
   const g=await revgeo(lat,lng);
-  if(pop.isOpen())pop.setContent(`<div class="pp"><b>${esc(g.name)}</b><small>${esc(g.sub)}</small><div class="pb"><button data-set="0" data-lat="${lat}" data-lon="${lng}" data-name="${esc(g.name)}">出発地に</button><button data-set="via" data-lat="${lat}" data-lon="${lng}" data-name="${esc(g.name)}">経由地に</button><button class="pri" data-set="dest" data-lat="${lat}" data-lon="${lng}" data-name="${esc(g.name)}">目的地に</button></div></div>`);
+  if(pop.isOpen())pop.setContent(`<div class="pp"><b>${esc(g.name)}</b><small>${esc(g.sub)}</small><div class="pb"><button data-set="0" data-lat="${lat}" data-lon="${lng}" data-name="${esc(g.name)}">出発地に（航続範囲もここから）</button><button data-set="via" data-lat="${lat}" data-lon="${lng}" data-name="${esc(g.name)}">経由地に</button><button class="pri" data-set="dest" data-lat="${lat}" data-lon="${lng}" data-name="${esc(g.name)}">目的地に</button></div></div>`);
 });
 document.addEventListener('click',async e=>{
   const b=e.target.closest('[data-set]');if(!b)return;
@@ -997,6 +1022,108 @@ function drawMap(fit){
     if(b&&b.isValid())map.fitBounds(b,{paddingTopLeft:[30,50],paddingBottomRight:[30,180],maxZoom:14});
   }
 }
+
+// ================= 航続範囲（充電なしで行ける範囲） =================
+const RANGE_BANDS=[{lv:50,col:'--accent',lab:'50%以上残る'},{lv:30,col:'--teal',lab:'30〜50%残る'},{lv:10,col:'--warn',lab:'10〜30%残る'},{lv:0,col:'--bad',lab:'10%未満（ぎりぎり）'}];
+let rangeOn=false,rangeSeq=0,rangeMode='hw';const gRange=L.layerGroup();
+// 陸地を数kmのマス目に分け、各マスまでの最小消費電力を求める（湾は回り込み、狭い海峡だけ渡れる）
+function tileData(z,x,y){return demTile(z,x,y);}
+async function computeRange(origin){
+  const hw=rangeMode==='hw',ef=carEff(),kwhKm=(hw?ef.hw:ef.gen)/1000,cap=capNow(),P=physics(),g=9.81;
+  const circBase=hw?1.1:1.2,avail=st.soc/100*cap;
+  const Rk=Math.min(700,avail/kwhKm/circBase*1.05),cell=Rk>350?5:4,n=Math.ceil(Rk/cell),W=2*n+1;
+  const cosl=Math.cos(origin.lat*D2R),step=cell/(6371*cosl);         // メルカトル上で等間隔
+  const merc=la=>Math.log(Math.tan(Math.PI/4+la*D2R/2)),imerc=y=>(2*Math.atan(Math.exp(y))-Math.PI/2)*R2D;
+  const y0=merc(origin.lat),latOf=r=>imerc(y0+(n-r)*step),lonOf=c=>origin.lon+(c-n)*step*R2D;
+  // 標高タイル(z8)を先読みして同期的に読む
+  const z=8,N2=2**z,tx=lo=>Math.floor((lo+180)/360*N2),ty=la=>Math.floor((1-merc(la)/Math.PI)/2*N2);
+  const keys=[];for(let X=tx(lonOf(0));X<=tx(lonOf(W-1));X++)for(let Y=ty(latOf(0));Y<=ty(latOf(W-1));Y++)keys.push([X,Y]);
+  const TD=new Map();await Promise.all(keys.map(async([X,Y])=>TD.set(X+'/'+Y,await tileData(z,X,Y))));
+  const ele=new Float32Array(W*W);
+  const read=(la,lo)=>{const fy=(1-merc(la)/Math.PI)/2*N2,fx=(lo+180)/360*N2,X=Math.floor(fx),Y=Math.floor(fy),d=TD.get(X+'/'+Y);if(!d)return NaN;
+    const i=(Math.min(255,Math.floor((fy-Y)*256))*256+Math.min(255,Math.floor((fx-X)*256)))*4,raw=d[i]*65536+d[i+1]*256+d[i+2];
+    return raw===8388608?NaN:(raw<8388608?raw:raw-16777216)*0.01;};
+  // 道路は谷沿いを通るので、マス内9点のうち最も低い陸地の標高を使う（陸が3点未満なら海扱い）
+  const rel=new Float32Array(W*W);
+  for(let r=0;r<W;r++)for(let c=0;c<W;c++){let lo=Infinity,hi=-Infinity,nl=0;
+    for(let a=-1;a<=1;a++)for(let b=-1;b<=1;b++){const v=read(latOf(r+a/3),lonOf(c+b/3));if(!Number.isNaN(v)){nl++;if(v<lo)lo=v;if(v>hi)hi=v;}}
+    ele[r*W+c]=nl>=3?Math.max(0,lo):NaN;rel[r*W+c]=nl>=3?hi-lo:0;}
+  const land=i=>!Number.isNaN(ele[i]);
+  // 陸から1マス以内の海だけ通れる（関門・鳴門・瀬戸大橋などの狭い海峡）。広い湾や津軽海峡は不可
+  const pass=new Uint8Array(W*W);
+  for(let r=0;r<W;r++)for(let c=0;c<W;c++){const i=r*W+c;if(land(i)){pass[i]=1;continue;}
+    let a=0;for(let dr=-1;dr<=1;dr++)for(let dc=-1;dc<=1;dc++){const rr=r+dr,cc=c+dc;if(rr>=0&&cc>=0&&rr<W&&cc<W&&land(rr*W+cc))a++;}
+    pass[i]=a>=2?1:0;}
+  // 道のりを最短にする経路を探し（起伏が大きいほど道は曲がる）、電力は道のり×電費＋出発地との標高差で求める
+  const D=new Float64Array(W*W).fill(Infinity),MX=new Float64Array(W*W),E=new Float32Array(W*W).fill(Infinity),B=new Float32Array(W*W).fill(Infinity);
+  const s0=n*W+n;pass[s0]=1;D[s0]=0;
+  if(Number.isNaN(ele[s0]))ele[s0]=0;
+  const hk=[],hv=[];const push=(k,v)=>{hk.push(k);hv.push(v);let i=hk.length-1;while(i>0){const p=(i-1)>>1;if(hk[p]<=hk[i])break;[hk[p],hk[i]]=[hk[i],hk[p]];[hv[p],hv[i]]=[hv[i],hv[p]];i=p;}};
+  const pop=()=>{const k=hk[0],v=hv[0],lk=hk.pop(),lv=hv.pop();if(hk.length){hk[0]=lk;hv[0]=lv;let i=0;for(;;){const l=2*i+1,r=l+1;let m=i;if(l<hk.length&&hk[l]<hk[m])m=l;if(r<hk.length&&hk[r]<hk[m])m=r;if(m===i)break;[hk[m],hk[i]]=[hk[i],hk[m]];[hv[m],hv[i]]=[hv[i],hv[m]];i=m;}}return[k,v];};
+  push(0,s0);const maxRoad=avail/kwhKm*1.15;
+  const NB=[[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[-1,1],[1,-1],[1,1]];
+  while(hk.length){const [d,i]=pop();if(d>D[i])continue;if(d>maxRoad)break;
+    const r=(i/W)|0,c=i%W,km0=cell*Math.cos(latOf(r)*D2R)/cosl;
+    for(const [dr,dc] of NB){const rr=r+dr,cc=c+dc;if(rr<0||cc<0||rr>=W||cc>=W)continue;const j=rr*W+cc;if(!pass[j])continue;
+      const dist=km0*(dr&&dc?Math.SQRT2:1),sea=Number.isNaN(ele[j])||Number.isNaN(ele[i]);
+      const circ=sea?1.6:circBase+Math.min(0.3,(rel[i]+rel[j])/2/1000*0.18);
+      // 山道は峠の上り下りやカーブでの加減速ぶんを上乗せ
+      const nd=d+dist*circ;if(nd<D[j]){D[j]=nd;MX[j]=MX[i]+(sea?0:dist*circ*Math.min(0.2,(rel[i]+rel[j])/2/1000*0.18));push(nd,j);}}}
+  const m=P.mass*g/3.6e6,e0=ele[s0];
+  const lift=dh=>dh>0?m*dh/P.eta:m*dh*P.regen*P.eta;
+  for(let i=0;i<W*W;i++){if(!(D[i]<Infinity))continue;const h=Number.isNaN(ele[i])?e0:ele[i];
+    E[i]=Math.max(0,(D[i]+MX[i])*kwhKm+lift(h-e0));B[i]=Math.max(0,(D[i]+MX[i])*kwhKm+lift(e0-h));}
+  return{W,n,E,B,D,ele,rel,pass,cell,latOf,lonOf,cap,kwhKm,origin};
+}
+function rangeImage(R){
+  const S=3,cv=document.createElement('canvas');cv.width=cv.height=R.W*S;const cx=cv.getContext('2d');
+  const levels=RANGE_BANDS.map(b=>b.lv).filter(l=>l<st.soc);
+  const cols=Object.fromEntries(RANGE_BANDS.map(b=>[b.lv,cssv(b.col)]));
+  const rtLim=(st.soc-st.reserve)/100*R.cap,W=R.W;
+  const rt=i=>R.E[i]+R.B[i]<=rtLim;
+  for(let r=0;r<W;r++)for(let c=0;c<W;c++){const i=r*W+c;if(!(R.E[i]<Infinity))continue;
+    const soc=st.soc-R.E[i]/R.cap*100;if(soc<0)continue;
+    const lv=levels.find(l=>soc>=l);if(lv==null)continue;
+    cx.fillStyle=cols[lv];cx.globalAlpha=0.38;cx.fillRect(c*S,r*S,S,S);}
+  // 往復できる範囲の境界
+  cx.globalAlpha=0.9;cx.fillStyle=cssv('--fg');
+  for(let r=1;r<W-1;r++)for(let c=1;c<W-1;c++){const i=r*W+c;if(!rt(i))continue;
+    if(!rt(i-1))cx.fillRect(c*S,r*S,1,S);if(!rt(i+1))cx.fillRect(c*S+S-1,r*S,1,S);
+    if(!rt(i-W))cx.fillRect(c*S,r*S,S,1);if(!rt(i+W))cx.fillRect(c*S,r*S+S-1,S,1);}
+  const h=0.5;
+  return{url:cv.toDataURL(),bounds:[[R.latOf(W-1+h),R.lonOf(-h)],[R.latOf(-h),R.lonOf(W-1+h)]]};
+}
+async function drawRange(){
+  gRange.clearLayers();$('#rangeLegend')?.remove();
+  if(!rangeOn)return;
+  const o=st.locs[0];if(!o){showErr('航続範囲を出すには出発地（現在地）を設定してください');return;}
+  const my=++rangeSeq;busy(true,'航続範囲を計算中…');
+  try{
+    const R=await computeRange(o);if(my!==rangeSeq||!rangeOn)return;
+    const img=rangeImage(R);
+    L.imageOverlay(img.url,img.bounds,{opacity:1,interactive:false,className:'rangeimg'}).addTo(gRange);
+    const levels=RANGE_BANDS.map(b=>b.lv).filter(l=>l<st.soc);
+    const flatKm=l=>Math.round((st.soc-l)/100*R.cap/R.kwhKm);
+    const cellOf=(la,lo)=>{const c=Math.round((lo-R.origin.lon)/((R.lonOf(1)-R.lonOf(0)))+R.n);let best=0,bd=1e9;for(let r=0;r<R.W;r++){const d=Math.abs(R.latOf(r)-la);if(d<bd){bd=d;best=r;}}return c>=0&&c<R.W?best*R.W+c:-1;};
+    const inRange=SC.filter(c=>{const i=cellOf(c.lat,c.lon);return i>=0&&R.E[i]<=st.soc/100*R.cap;}).length;
+    const box=document.createElement('div');box.id='rangeLegend';box.className='rlegend';
+    box.innerHTML=`<b>充電なしで行ける範囲</b><div class="rmode"><button data-rm="hw" aria-pressed="${rangeMode==='hw'}">高速 ${st.speed}km/h</button><button data-rm="gen" aria-pressed="${rangeMode==='gen'}">一般道</button></div><small>${esc(M().name)}・${esc(o.name)}から・出発時 ${st.soc}%・${st.temp}℃・平地 ${Math.round(R.kwhKm*1000)} Wh/km</small>`+
+      levels.map(l=>{const b=RANGE_BANDS.find(x=>x.lv===l);return`<div><i style="background:var(${b.col})"></i>${b.lab}<span class="num">平地で${flatKm(l)} km</span></div>`;}).join('')+
+      `<div><i class="dash"></i>往復できる範囲（帰宅時${st.reserve}%）</div><small>坂の上り下り・回生・山道の曲がりを含め、湾は回り込んで計算。フェリーが必要な島は含みません。範囲内のスーパーチャージャー ${inRange} か所</small>`;
+    box.onclick=e=>{const b=e.target.closest('[data-rm]');if(!b)return;rangeMode=b.dataset.rm;drawRange();};
+    $('.mapwrap').appendChild(box);
+  }catch(e){showErr('航続範囲を計算できませんでした：'+e.message);}
+  finally{busy(false);}
+}
+let rangeTimer=0;const scheduleRange=()=>{if(!rangeOn)return;clearTimeout(rangeTimer);rangeTimer=setTimeout(drawRange,400);};
+const RangeCtl=L.Control.extend({options:{position:'topleft'},onAdd(){
+  const b=L.DomUtil.create('button','rangebtn');b.type='button';b.innerHTML='<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M9.2 1 3 9h4l-1 6 6.2-8.2H8.3z"/></svg>航続範囲';
+  b.title='充電なしで行ける範囲を表示';b.setAttribute('aria-pressed','false');
+  L.DomEvent.disableClickPropagation(b);
+  b.onclick=()=>{rangeOn=!rangeOn;b.setAttribute('aria-pressed',rangeOn);if(rangeOn){gUnder.addLayer(gRange);
+      const o=st.locs[0];if(o)map.setView([o.lat,o.lon],7);}else gUnder.removeLayer(gRange);drawRange();};
+  return b;}});
+new RangeCtl().addTo(map);
 
 // ================= 地点入力 =================
 function renderLocs(){
@@ -1061,6 +1188,7 @@ function initUI(){
     if(b.dataset.v==='reset')delete OVR[id];else{const V=view(),ev=V.tl.ev.find(x=>x.type==='sc'&&x.A.c.i===id);OVR[id]=Math.max(10,Math.min(100,Math.round((OVR[id]??ev.dep)+(+b.dataset.v))));}
     const R=RES[st.plan];if(R&&R.refined){const key=Object.keys(REF).find(k=>REF[k].plan===st.plan&&REF[k].r===R.refined.route);if(key)applyRefine(REF[key]);}
     else{const route=R.route,marks=[...viaMarks(route),...R.stops.map(s=>({d:s.d,kind:'sc',c:s.c,det:s.det,direct:s.direct,hw:s.hw,override:OVR[s.c.i]}))];R.tl=timeline(route,R.pr,marks,R.o);renderAll(false);}};
+  $('#cartable').onclick=e=>{const r=e.target.closest('[data-model]');if(!r)return;st.model=r.dataset.model;$('#model').value=st.model;Object.keys(OVR).forEach(x=>delete OVR[x]);REF={};recompute(false);};
   $('#gps').onclick=useGPS;
   $('#addvia').onclick=()=>{st.locs.splice(st.locs.length-1,0,null);renderLocs();$('#loc'+(st.locs.length-2))?.focus();};
   $('#swap').onclick=()=>{st.locs.reverse();renderLocs();loadRoutes();};
@@ -1081,7 +1209,7 @@ function alignArrival(){
 }
 const _load=loadRoutes;loadRoutes=async()=>{save();await _load();pushRecent();};
 new ResizeObserver(()=>{const V=view();if(V)drawChart(V);}).observe($('#chart'));
-window.__ev={get RES(){return RES},get BASE(){return BASE},get REF(){return REF},profile,candidates};
+window.__ev={get RES(){return RES},get BASE(){return BASE},get REF(){return REF},profile,candidates,computeRange,elevAt};
 initUI();renderLocs();renderRecent();renderTop();drawChart(null);drawMap(false);
 loadRoutes();
 })();
