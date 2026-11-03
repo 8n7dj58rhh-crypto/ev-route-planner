@@ -175,6 +175,9 @@ details.box[open] summary::after{content:"－"}
 .tog{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer}
 .tog input{accent-color:var(--accent);width:16px;height:16px}
 .grp{font-size:11px;font-weight:700;color:var(--faint);letter-spacing:.08em;margin-top:4px}
+.ttrow{display:grid;grid-template-columns:1fr auto auto;gap:6px}
+.ttrow input{border:1px solid var(--line);background:var(--chip);color:var(--fg);border-radius:8px;padding:6px 8px;font-size:14px;min-width:0}
+.ttstat{font-size:11px;color:var(--faint)}.ttstat.good{color:var(--good)}.ttstat.bad{color:var(--bad)}
 .note{font-size:11px;color:var(--faint);line-height:1.6;margin:0}
 
 /* 地図 */
@@ -310,6 +313,10 @@ details.box[open] summary::after{content:"－"}
         </div>
         <label class="tog"><input type="checkbox" id="rain"> 雨・雪（手動・路面抵抗アップ）</label>
 
+        <div class="grp">リアルタイム渋滞（TomTom）</div>
+        <div class="field"><label for="ttkey">TomTomのAPIキー <span id="ttstat" class="ttstat"></span></label>
+          <div class="ttrow"><input type="password" id="ttkey" autocomplete="off" spellcheck="false" placeholder="キーを貼り付け"><button class="btn pri" id="ttsave" type="button">保存</button><button class="btn" id="ttclear" type="button">削除</button></div></div>
+        <p class="note" style="margin:0">キーはこの端末のブラウザにだけ保存され、公開ページやほかの人には送られません。保存すると地図に渋滞・事故・規制が表示され、所要時間と電費に渋滞の遅れが反映されます（手動の「混雑」設定の代わりに使われます）。出発が10分以上先なら、その時刻の予測渋滞を使います。</p>
         <div class="grp">料金</div>
         <div class="row2">
           <div class="field"><label for="price">SC単価（円/kWh）</label><input type="number" id="price" min="0" value="65"></div>
@@ -531,12 +538,14 @@ function carEff(m=M(),T=st.temp){
 // 区間ごとの時間(h)と消費(kWh)
 function profile(route,speedOverride){
   const P=physics(),g=9.81,spd=speedOverride||st.speed;let tH=0;
+  // TomTomの渋滞情報があればその遅れ率を使い、手動の混雑設定は使わない
+  const tk=route.traffic?route.traffic.k:1,cong=route.traffic?1:(st.traffic||1);
   const out=route.segs.map(s=>{
     let v,vc;
     if(s.ferry){const t=s.vt;tH+=t;return{t,e:0,T:null};}
     if(s.hw&&!s.urban){vc=spd;v=spd*0.96;}
-    else{v=s.v/(st.traffic||1);vc=s.hw?Math.min(80,s.v*1.1):Math.min(60,Math.max(v*1.3,v+8));}
-    const t=s.len/v,E=env(route,s,tH);
+    else{v=s.v/cong;vc=s.hw?Math.min(80,s.v*1.1):Math.min(60,Math.max(v*1.3,v+8));}
+    const t=s.len/v*tk,E=env(route,s,tH);
     const rho=1.225*288.15/(273.15+E.T);
     const head=E.ws*0.65*Math.cos((E.wd-s.head)*D2R);           // 向かい風を正
     const vr=(vc+head)/3.6;
@@ -683,6 +692,7 @@ async function loadRoutes(){
     }
     busy(null,'天気予報を取得中…');
     await attachWeather(out.hw,out.gen);
+    if(ttKey()){busy(null,'渋滞情報を取得中…');await Promise.all(['hw','gen'].map(async m=>{out[m].traffic=await ttTraffic(L,m);}));}
     if(my!==seq)return;
     BASE=out;REF={};recompute(!rangeOn);
   }catch(e){showErr(e.message||String(e));}
@@ -733,7 +743,7 @@ async function refine(){
   const needFetch=routed.some(a=>a.kind==='sc');
   busy(true,'充電地点経由で再計算中…');
   try{
-    const r=needFetch?await buildRoute(await valhalla(locs,R.p.mode)):route;r.mode=R.p.mode;r.wx=route.wx;
+    const r=needFetch?await buildRoute(await valhalla(locs,R.p.mode)):route;r.mode=R.p.mode;r.wx=route.wx;r.traffic=route.traffic;
     // 天気サンプルの距離を新ルートに合わせる
     if(r.wx)r.wx={...r.wx,samples:r.wx.samples.map(s=>({...s,d:s.d*r.D/route.D}))};
     REF[key]={r,all,routed,plan:st.plan};
@@ -770,7 +780,8 @@ function renderAll(fit){
     ['#sum','#stats','#iti','#costsec','#turns','#gmaps'].forEach(s=>$(s).innerHTML='');renderSpeed();drawChart(null);drawMap(fit);return;
   }
   const V=view();
-  $('#alert').innerHTML=V.tl.warn?`<div class="alert"><b>注意：</b>${esc(V.tl.warn)}</div>`:(V.route.wx?`<div class="alert info"><b>天気予報を反映：</b>${wxSummary(V)}</div>`:'');
+  const tr=V.route.traffic,trTxt=tr?`<br><b>渋滞を反映（TomTom${tr.live?'・リアルタイム':'・予測'}）：</b>${tr.delayMin>=1?`このルートは約 ${Math.round(tr.delayMin)} 分の遅れ`:'目立った渋滞なし'}`:'';
+  $('#alert').innerHTML=V.tl.warn?`<div class="alert"><b>注意：</b>${esc(V.tl.warn)}</div>`:(V.route.wx||tr?`<div class="alert info">${V.route.wx?`<b>天気予報を反映：</b>${wxSummary(V)}`:''}${trTxt}</div>`:'');
   renderSummary(V);renderIti(V);renderCost(V);renderSpeed();renderTurns(V);drawChart(V);drawMap(fit);
 }
 function wxSummary(V){
@@ -953,7 +964,36 @@ const LAYERS={
  'ダーク':L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{maxZoom:19,attribution:'&copy; OpenStreetMap &copy; CARTO'})
 };
 (dark?LAYERS['ダーク']:LAYERS['地理院 淡色']).addTo(map);
-L.control.layers(LAYERS,null,{position:'topright'}).addTo(map);
+const layerCtl=L.control.layers(LAYERS,null,{position:'topright'}).addTo(map);
+// ===== 渋滞情報（TomTom）。キーはこの端末のブラウザにだけ保存し、ページには含めない =====
+const ttKey=()=>{try{return localStorage.getItem('evplanner-tomtom')||'';}catch(e){return'';}};
+let ttLayers=null;
+function setupTraffic(){
+  if(ttLayers){ttLayers.forEach(l=>{map.removeLayer(l);layerCtl.removeLayer(l);});ttLayers=null;}
+  const k=ttKey();if(!k)return;
+  const flow=L.tileLayer(`https://api.tomtom.com/traffic/map/4/tile/flow/relative0/{z}/{x}/{y}.png?key=${encodeURIComponent(k)}`,{maxZoom:22,opacity:0.85,zIndex:5,attribution:'渋滞 &copy; TomTom'});
+  const inc=L.tileLayer(`https://api.tomtom.com/traffic/map/4/tile/incidents/s3/{z}/{x}/{y}.png?key=${encodeURIComponent(k)}`,{maxZoom:22,zIndex:6});
+  layerCtl.addOverlay(flow,'渋滞（TomTom）');layerCtl.addOverlay(inc,'事故・工事・規制');
+  flow.addTo(map);inc.addTo(map);ttLayers=[flow,inc];
+}
+// ルートの渋滞による遅れ率（実際の所要時間 ÷ 渋滞なしの所要時間）
+async function ttTraffic(locs,mode){
+  const k=ttKey();if(!k)return null;
+  const dep=depEpoch(),live=dep<Date.now()+10*60*1000;
+  const pad=n=>String(n).padStart(2,'0'),d=new Date(Math.max(dep,Date.now()+60000));
+  const departAt=live?'now':`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
+  const path=locs.map(l=>`${l.lat.toFixed(5)},${l.lon.toFixed(5)}`).join(':');
+  const q=`key=${encodeURIComponent(k)}&traffic=true&computeTravelTimeFor=all&routeType=fastest&departAt=${departAt}${mode==='gen'?'&avoid=motorways&avoid=tollRoads':''}`;
+  try{const r=await fetch(`https://api.tomtom.com/routing/1/calculateRoute/${path}/json?${q}`);
+    if(r.status===403||r.status===401){ttStatus('キーが無効です。もう一度確認してください','bad');return null;}
+    if(!r.ok){ttStatus('渋滞情報を取得できませんでした（'+r.status+'）','bad');return null;}
+    const s=(await r.json()).routes?.[0]?.summary;if(!s)return null;
+    const free=s.noTrafficTravelTimeInSeconds||s.travelTimeInSeconds,real=s.travelTimeInSeconds;
+    ttStatus('渋滞情報を反映中','good');
+    return{k:Math.max(1,Math.min(3,real/free)),delayMin:Math.max(0,(real-free)/60),live};
+  }catch(e){ttStatus('渋滞情報を取得できませんでした','bad');return null;}
+}
+function ttStatus(t,c){const el=$('#ttstat');if(el){el.textContent=t;el.className='ttstat '+(c||'');}}
 L.control.scale({imperial:false}).addTo(map);
 const gUnder=L.layerGroup().addTo(map),gAll=L.layerGroup().addTo(map),gAlt=L.layerGroup().addTo(map),gRoute=L.layerGroup().addTo(map),gMk=L.layerGroup().addTo(map);
 const renderer=L.canvas({padding:0.3});
@@ -1189,6 +1229,12 @@ function initUI(){
     const R=RES[st.plan];if(R&&R.refined){const key=Object.keys(REF).find(k=>REF[k].plan===st.plan&&REF[k].r===R.refined.route);if(key)applyRefine(REF[key]);}
     else{const route=R.route,marks=[...viaMarks(route),...R.stops.map(s=>({d:s.d,kind:'sc',c:s.c,det:s.det,direct:s.direct,hw:s.hw,override:OVR[s.c.i]}))];R.tl=timeline(route,R.pr,marks,R.o);renderAll(false);}};
   $('#cartable').onclick=e=>{const r=e.target.closest('[data-model]');if(!r)return;st.model=r.dataset.model;$('#model').value=st.model;Object.keys(OVR).forEach(x=>delete OVR[x]);REF={};recompute(false);};
+  $('#ttkey').value=ttKey()?'••••••••':'';if(ttKey())ttStatus('保存済み','good');
+  $('#ttkey').addEventListener('focus',e=>{if(e.target.value==='••••••••')e.target.value='';});
+  $('#ttsave').onclick=()=>{const v=$('#ttkey').value.trim();if(!v||v==='••••••••')return;
+    try{localStorage.setItem('evplanner-tomtom',v);}catch(e){ttStatus('この端末では保存できません','bad');return;}
+    $('#ttkey').value='••••••••';ttStatus('保存しました','good');setupTraffic();loadRoutes();};
+  $('#ttclear').onclick=()=>{try{localStorage.removeItem('evplanner-tomtom');}catch(e){}$('#ttkey').value='';ttStatus('削除しました','');setupTraffic();loadRoutes();};
   $('#gps').onclick=useGPS;
   $('#addvia').onclick=()=>{st.locs.splice(st.locs.length-1,0,null);renderLocs();$('#loc'+(st.locs.length-2))?.focus();};
   $('#swap').onclick=()=>{st.locs.reverse();renderLocs();loadRoutes();};
@@ -1210,7 +1256,7 @@ function alignArrival(){
 const _load=loadRoutes;loadRoutes=async()=>{save();await _load();pushRecent();};
 new ResizeObserver(()=>{const V=view();if(V)drawChart(V);}).observe($('#chart'));
 window.__ev={get RES(){return RES},get BASE(){return BASE},get REF(){return REF},profile,candidates,computeRange,elevAt};
-initUI();renderLocs();renderRecent();renderTop();drawChart(null);drawMap(false);
+initUI();setupTraffic();renderLocs();renderRecent();renderTop();drawChart(null);drawMap(false);
 loadRoutes();
 })();
 </script>
