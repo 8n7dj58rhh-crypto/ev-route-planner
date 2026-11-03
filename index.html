@@ -413,7 +413,9 @@ let busyN=0;function busy(on,txt){if(on!==null)busyN=Math.max(0,busyN+(on?1:-1))
 // ================= 外部API =================
 async function valhalla(locs,mode){
   const body={locations:locs.map(l=>({lat:+l.lat.toFixed(6),lon:+l.lon.toFixed(6),type:'break'})),costing:'auto',
-    costing_options:{auto:mode==='hw'?{use_highways:1,use_tolls:1}:{use_highways:0,use_tolls:0}},
+    // どちらも生活道路・未舗装路・私道・施設内道路を避ける。一般道は高速料金がかからない道（無料バイパスは可）
+    costing_options:{auto:{...(mode==='hw'?{use_highways:1,use_tolls:1}:{use_highways:0.3,use_tolls:0}),
+      use_living_streets:0,use_tracks:0,exclude_unpaved:true,service_penalty:300,private_access_penalty:900}},
     language:'ja-JP',directions_options:{units:'km'}};
   for(let tryN=0;tryN<3;tryN++){
     const r=await fetch('https://valhalla1.openstreetmap.de/route?json='+encodeURIComponent(JSON.stringify(body)));
@@ -633,7 +635,7 @@ function timeline(route,pr,stopsAt,o){
     if(A.kind==='sc'){
       // 次の充電地点（または目的地）まで届く量だけ充電
       let n=k+1;while(pts[n].kind==='via')n++;
-      const R=pts[n].kind==='dest'?o.arrive:o.reserve;
+      const R=pts[n].kind==='dest'?o.arrive:(ARR[pts[n].c.i]??o.reserve);   // 次の充電地点での到着残量（手動指定があればそれ）
       const need=(at(pr,pr.cumE,pts[n].d)-at(pr,pr.cumE,A.d)+(A.det?.e||0)+(pts[n].det?.e||0))/cap*100+R;
       let dep=Math.min(100,Math.max(need,soc+st.minchg));
       if(A.override!=null)dep=Math.max(soc,Math.min(100,A.override));
@@ -703,7 +705,7 @@ const PLANS=[
  {id:'fast',label:'最速',mode:'hw',o:()=>({stopPen:0})},
  {id:'few',label:'停車少なめ',mode:'hw',o:()=>({stopPen:0.4})},
  {id:'safe',label:'残量に余裕',mode:'hw',o:()=>({stopPen:0.15,reserve:Math.max(st.reserve,20),arrive:Math.max(st.arrive,30)})},
- {id:'gen',label:'一般道のみ',mode:'gen',o:()=>({stopPen:0})}
+ {id:'gen',label:'一般道（無料）',mode:'gen',o:()=>({stopPen:0})}
 ];
 function viaMarks(route){
   // 経由地はValhallaの区間終端
@@ -766,7 +768,7 @@ function applyRefine(x){
   R.refined={route:r,pr,tl:timeline(r,pr,marks,R.o),toll:tolls(r,pr)};
   renderAll(false);
 }
-const OVR={};
+const OVR={},ARR={};
 
 // ================= 描画 =================
 function view(){const R=RES[st.plan];if(!R||R.fail)return R;const f=R.refined;return f?{...R,route:f.route,pr:f.pr,tl:f.tl,toll:f.toll,ref:true}:R;}
@@ -855,6 +857,7 @@ function renderIti(V){
        <div class="meta">${c.kw} kW・${c.stalls}基 ・ ${esc(c.fac||c.city)}</div>
        <div class="meta">充電 ${Math.round((e.ch-OVERHEAD)*60)}分 ・ +${e.kwh.toFixed(1)} kWh ・ ${yen(e.kwh*st.price)}</div>
        ${socHTML(e.arr,e.dep)}<div class="detour" style="${A.direct?'color:var(--good)':''}">${where}</div>
+       ${sc===1?`<div class="chgadj">到着時の残量 <b class="num">${Math.round(e.arr)}%</b><span>（出発時の残量で決まります）</span></div>`:`<div class="chgadj">到着時の残量 <button data-arr="${c.i}" data-v="-5" aria-label="到着時の残量を5%減らす">−</button><b class="num">${Math.round(e.arr)}%</b><button data-arr="${c.i}" data-v="5" aria-label="到着時の残量を5%増やす">＋</button>${ARR[c.i]!=null?`<button data-arr="${c.i}" data-v="reset" style="width:auto;padding:0 6px">自動</button>`:''}</div>`}
        <div class="chgadj">充電目標 <button data-adj="${c.i}" data-v="-5" aria-label="5%減らす">−</button><b class="num">${Math.round(e.dep)}%</b><button data-adj="${c.i}" data-v="5" aria-label="5%増やす">＋</button>${OVR[c.i]!=null?`<button data-adj="${c.i}" data-v="reset" style="width:auto;padding:0 6px">自動</button>`:''}</div></div>
        <div class="time num">${ta.txt}<div class="meta">${td.txt} 発</div></div></li>`;
     }else if(e.type==='via'){
@@ -983,7 +986,7 @@ async function ttTraffic(locs,mode){
   const pad=n=>String(n).padStart(2,'0'),d=new Date(Math.max(dep,Date.now()+60000));
   const departAt=live?'now':`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
   const path=locs.map(l=>`${l.lat.toFixed(5)},${l.lon.toFixed(5)}`).join(':');
-  const q=`key=${encodeURIComponent(k)}&traffic=true&computeTravelTimeFor=all&routeType=fastest&departAt=${departAt}${mode==='gen'?'&avoid=motorways&avoid=tollRoads':''}`;
+  const q=`key=${encodeURIComponent(k)}&traffic=true&computeTravelTimeFor=all&routeType=fastest&departAt=${departAt}${mode==='gen'?'&avoid=tollRoads&avoid=unpavedRoads':'&avoid=unpavedRoads'}`;
   try{const r=await fetch(`https://api.tomtom.com/routing/1/calculateRoute/${path}/json?${q}`);
     if(r.status===403||r.status===401){ttStatus('キーが無効です。もう一度確認してください','bad');return null;}
     if(!r.ok){ttStatus('渋滞情報を取得できませんでした（'+r.status+'）','bad');return null;}
@@ -1224,8 +1227,14 @@ function initUI(){
       REF={};recompute(false);
     });});
   $('#opts').onclick=e=>{const b=e.target.closest('.opt');if(!b)return;st.plan=b.dataset.plan;renderAll(false);scheduleRefine();save();};
-  $('#iti').onclick=e=>{const b=e.target.closest('[data-adj]');if(!b)return;const id=+b.dataset.adj;
-    if(b.dataset.v==='reset')delete OVR[id];else{const V=view(),ev=V.tl.ev.find(x=>x.type==='sc'&&x.A.c.i===id);OVR[id]=Math.max(10,Math.min(100,Math.round((OVR[id]??ev.dep)+(+b.dataset.v))));}
+  $('#iti').onclick=e=>{const b=e.target.closest('[data-adj],[data-arr]');if(!b)return;
+    const V=view(),scs=V.tl.ev.filter(x=>x.type==='sc');
+    if(b.dataset.arr!=null){
+      // 到着残量を変えたら、ひとつ前の充電地点の充電目標は自動に戻して再計算させる
+      const id=+b.dataset.arr,k=scs.findIndex(x=>x.A.c.i===id);if(k>0)delete OVR[scs[k-1].A.c.i];
+      if(b.dataset.v==='reset')delete ARR[id];else ARR[id]=Math.max(3,Math.min(90,Math.round((ARR[id]??scs[k].arr)+(+b.dataset.v))));
+    }else{const id=+b.dataset.adj;
+      if(b.dataset.v==='reset')delete OVR[id];else{const ev=scs.find(x=>x.A.c.i===id);OVR[id]=Math.max(10,Math.min(100,Math.round((OVR[id]??ev.dep)+(+b.dataset.v))));}}
     const R=RES[st.plan];if(R&&R.refined){const key=Object.keys(REF).find(k=>REF[k].plan===st.plan&&REF[k].r===R.refined.route);if(key)applyRefine(REF[key]);}
     else{const route=R.route,marks=[...viaMarks(route),...R.stops.map(s=>({d:s.d,kind:'sc',c:s.c,det:s.det,direct:s.direct,hw:s.hw,override:OVR[s.c.i]}))];R.tl=timeline(route,R.pr,marks,R.o);renderAll(false);}};
   $('#cartable').onclick=e=>{const r=e.target.closest('[data-model]');if(!r)return;st.model=r.dataset.model;$('#model').value=st.model;Object.keys(OVR).forEach(x=>delete OVR[x]);REF={};recompute(false);};
